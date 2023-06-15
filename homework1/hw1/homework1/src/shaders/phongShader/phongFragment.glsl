@@ -15,7 +15,7 @@ varying highp vec3 vFragPos;
 varying highp vec3 vNormal;
 
 // Shadow map related variables
-#define NUM_SAMPLES 20
+#define NUM_SAMPLES 50
 #define BLOCKER_SEARCH_NUM_SAMPLES NUM_SAMPLES
 #define PCF_NUM_SAMPLES NUM_SAMPLES
 #define NUM_RINGS 10
@@ -83,19 +83,41 @@ void uniformDiskSamples( const in vec2 randomSeed ) {
   }
 }
 
+/**
+* @brief 计算遮挡物平均深度
+* @param shadowMap 阴影贴图
+* @param uv 当前像素采样坐标
+* @param zReceiver 当前像素深度
+*/
 float findBlocker( sampler2D shadowMap,  vec2 uv, float zReceiver ) {
-	return 1.0;
+  float stride = 50.0;
+  float textureSize = 2048.0;
+  int blockerNum = 0;
+  float blockerDepth = 0.0;
+  poissonDiskSamples(uv);
+  for(int i = 0; i < BLOCKER_SEARCH_NUM_SAMPLES; i++){
+    float depth = unpack(texture2D(shadowMap, uv + poissonDisk[i] * stride / textureSize).rgba);
+    if(depth + EPS < zReceiver){
+      blockerDepth += depth;
+      blockerNum++;
+    }
+  }
+  blockerDepth /= float(blockerNum);
+  if(blockerNum == 0){
+    return 1.0;
+  }
+	return blockerDepth;
 }
 
-float PCF(sampler2D shadowMap, vec4 coords) {
+float PCF(sampler2D shadowMap, vec4 coords, float filterSize) {
   float shadowFactor = 0.0;
   float curDepth = coords.z;
-  float filterStride = 5.0;//滤波的步长
+  float filterStride = 20.0;//滤波的步长
   float textureSize = 2048.0;//shadowmap的大小，越大滤波的范围越小
   float filterRange = filterStride / textureSize;//滤波窗口的范围
   poissonDiskSamples(coords.xy);
   for(int i = 0; i < PCF_NUM_SAMPLES; i++){
-      float depth = unpack(texture2D(shadowMap, coords.xy + poissonDisk[i]*filterRange).rgba);
+      float depth = unpack(texture2D(shadowMap, coords.xy + poissonDisk[i]*filterRange*filterSize).rgba);
       shadowFactor += depth + EPS < curDepth ? 0.0 : 1.0;
   }
   shadowFactor = shadowFactor / float(PCF_NUM_SAMPLES);
@@ -106,12 +128,17 @@ float PCF(sampler2D shadowMap, vec4 coords) {
 float PCSS(sampler2D shadowMap, vec4 coords){
 
   // STEP 1: avgblocker depth
+  float avgBlockerDepth = findBlocker(shadowMap, coords.xy, coords.z);
 
-  // STEP 2: penumbra size
+  // STEP 2: penumbra size 半影直径
+  float lightWidth = 2.0;
+  float receiverDepth = coords.z;
+  float penumBraSize = lightWidth * (receiverDepth - avgBlockerDepth) / avgBlockerDepth;
 
   // STEP 3: filtering
+  float shadowFactor = PCF(shadowMap, coords, penumBraSize);
   
-  return 1.0;
+  return shadowFactor;
 
 }
 
@@ -153,8 +180,8 @@ void main(void) {
   vec3 shadowCoord = vPositionFromLight.xyz / vPositionFromLight.w;
   shadowCoord = shadowCoord.xyz * 0.5 + 0.5;//转换到0-1
   // visibility = useShadowMap(uShadowMap, vec4(shadowCoord, 1.0));
-  visibility = PCF(uShadowMap, vec4(shadowCoord, 1.0));
-  //visibility = PCSS(uShadowMap, vec4(shadowCoord, 1.0));
+  // visibility = PCF(uShadowMap, vec4(shadowCoord, 1.0), 1.0);
+  visibility = PCSS(uShadowMap, vec4(shadowCoord, 1.0));
 
   vec3 phongColor = blinnPhong();
 
